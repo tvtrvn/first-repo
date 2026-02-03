@@ -90,7 +90,7 @@ export default async function Home({
               )}
             </ul>
 
-            {pagination && (pagination.hasNextPage || pagination.hasPrevPage) && (
+            {pagination && (
               <nav
                 className="mt-10 flex flex-wrap items-center justify-center gap-2 border-t pt-8"
                 style={{ borderColor: "var(--card-border)" }}
