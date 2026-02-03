@@ -2,7 +2,20 @@ import { NextResponse } from 'next/server';
 
 const API_KEY = process.env.YOUTUBE_API_KEY;
 
-export async function GET() {
+/** Parse ISO 8601 duration (e.g. PT1M30S, PT45S) to seconds. Shorts are ≤60s. */
+function durationToSeconds(iso?: string): number {
+  if (!iso) return 0;
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/i);
+  if (!match) return 0;
+  const [, h, m, s] = match;
+  return (Number(h) || 0) * 3600 + (Number(m) || 0) * 60 + (Number(s) || 0);
+}
+
+const SHORTS_MAX_SECONDS = 60; // Exclude Shorts (≤60s)
+const PER_PAGE = 50;
+const SEARCH_PAGES = 8; // 8 × 50 = 400 candidates so we have multiple pages after filtering Shorts
+
+export async function GET(request: Request) {
   if (!API_KEY || API_KEY === 'paste_your_api_key_here') {
     return NextResponse.json(
       { error: 'YOUTUBE_API_KEY is not configured. Add your key to .env.local' },
@@ -11,71 +24,129 @@ export async function GET() {
   }
 
   try {
-    // 1) Search for music videos in VN, sorted by view count (top 10 most viewed)
-    const searchParams = new URLSearchParams({
-      part: 'snippet',
-      type: 'video',
-      order: 'viewCount',
-      regionCode: 'VN',
-      q: 'music videos in Vietnam',
-      maxResults: '20',
-      key: API_KEY,
-    });
-    const searchRes = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?${searchParams}`,
-      { next: { revalidate: 3600 } }
-    );
-    if (!searchRes.ok) {
-      const error = await searchRes.json();
-      return NextResponse.json(
-        { error: 'YouTube API error', details: error },
-        { status: searchRes.status }
+    const url = new URL(request.url);
+    const pageParam = url.searchParams.get('page');
+    const currentPage = Math.max(1, parseInt(pageParam ?? '1', 10) || 1);
+
+    // 1) Fetch multiple pages of search so we have enough non-Shorts for pagination
+    let videoIds: string[] = [];
+    let pageToken: string | undefined;
+
+    for (let p = 0; p < SEARCH_PAGES; p++) {
+      const searchParams = new URLSearchParams({
+        part: 'snippet',
+        type: 'video',
+        order: 'viewCount',
+        regionCode: 'VN',
+        q: 'vpop music videos',
+        maxResults: '50',
+        key: API_KEY,
+      });
+      if (pageToken) searchParams.set('pageToken', pageToken);
+
+      const searchRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?${searchParams}`,
+        { next: { revalidate: 3600 } }
       );
+      if (!searchRes.ok) {
+        const error = await searchRes.json();
+        return NextResponse.json(
+          { error: 'YouTube API error', details: error },
+          { status: searchRes.status }
+        );
+      }
+      const searchData = await searchRes.json();
+      const pageIds = (searchData.items ?? [])
+        .map((item: { id?: { videoId?: string } }) => item.id?.videoId)
+        .filter(Boolean) as string[];
+      videoIds = videoIds.concat(pageIds);
+      pageToken = searchData.nextPageToken;
+      if (!pageToken || pageIds.length === 0) break;
     }
-    const searchData = await searchRes.json();
-    const videoIds = (searchData.items ?? [])
-      .map((item: { id?: { videoId?: string } }) => item.id?.videoId)
-      .filter(Boolean) as string[];
+
     if (videoIds.length === 0) {
       return NextResponse.json({ success: true, count: 0, videos: [] });
     }
 
-    // 2) Get details (snippet + statistics) for those videos
-    const videosParams = new URLSearchParams({
-      part: 'snippet,statistics',
-      id: videoIds.join(','),
-      key: API_KEY,
-    });
-    const videosRes = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?${videosParams}`,
-      { next: { revalidate: 3600 } }
-    );
-    if (!videosRes.ok) {
-      const error = await videosRes.json();
-      return NextResponse.json(
-        { error: 'YouTube API error', details: error },
-        { status: videosRes.status }
-      );
-    }
-    const videosData = await videosRes.json();
-    const videos = (videosData.items ?? []).map((item: {
+    // 2) Get details in batches of 50 (videos.list max id count)
+    const BATCH_SIZE = 50;
+    const allItems: Array<{
       id: string;
       snippet?: { title?: string; channelTitle?: string; publishedAt?: string; thumbnails?: { medium?: { url?: string }; high?: { url?: string }; default?: { url?: string } } };
       statistics?: { viewCount?: string; likeCount?: string };
-    }) => ({
-      id: item.id,
-      title: item.snippet?.title,
-      channelTitle: item.snippet?.channelTitle,
-      publishedAt: item.snippet?.publishedAt,
-      thumbnailUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url,
-      viewCount: item.statistics?.viewCount ?? undefined,
-      likeCount: item.statistics?.likeCount ?? undefined,
-    }));
+      contentDetails?: { duration?: string };
+    }> = [];
+
+    for (let i = 0; i < videoIds.length; i += BATCH_SIZE) {
+      const batchIds = videoIds.slice(i, i + BATCH_SIZE);
+      const videosParams = new URLSearchParams({
+        part: 'snippet,statistics,contentDetails',
+        id: batchIds.join(','),
+        key: API_KEY,
+      });
+      const videosRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?${videosParams}`,
+        { next: { revalidate: 3600 } }
+      );
+      if (!videosRes.ok) {
+        const error = await videosRes.json();
+        return NextResponse.json(
+          { error: 'YouTube API error', details: error },
+          { status: videosRes.status }
+        );
+      }
+      const videosData = await videosRes.json();
+      allItems.push(...(videosData.items ?? []));
+    }
+
+    const videosData = { items: allItems };
+    type VideoItem = { id: string; viewCount?: string; durationSeconds?: number };
+    let videos = (videosData.items ?? []).map((item: {
+      id: string;
+      snippet?: { title?: string; channelTitle?: string; publishedAt?: string; thumbnails?: { medium?: { url?: string }; high?: { url?: string }; default?: { url?: string } } };
+      statistics?: { viewCount?: string; likeCount?: string };
+      contentDetails?: { duration?: string };
+    }) => {
+      const durationSeconds = durationToSeconds(item.contentDetails?.duration);
+      return {
+        id: item.id,
+        title: item.snippet?.title,
+        channelTitle: item.snippet?.channelTitle,
+        publishedAt: item.snippet?.publishedAt,
+        thumbnailUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url,
+        viewCount: item.statistics?.viewCount ?? undefined,
+        likeCount: item.statistics?.likeCount ?? undefined,
+        durationSeconds,
+      };
+    });
+    // Exclude YouTube Shorts (duration ≤ 60 seconds)
+    videos = videos.filter((v: VideoItem) => (v.durationSeconds ?? 0) > SHORTS_MAX_SECONDS);
+    // Sort only by view count, descending
+    videos = videos.sort((a: VideoItem, b: VideoItem) => Number(b.viewCount ?? 0) - Number(a.viewCount ?? 0));
+
+    const totalCount = videos.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));
+    const page = Math.min(currentPage, totalPages);
+    const start = (page - 1) * PER_PAGE;
+    const paginatedVideos = videos.slice(start, start + PER_PAGE);
+
+    // Drop durationSeconds from response
+    const videosForResponse = paginatedVideos.map((v: VideoItem & Record<string, unknown>) => {
+      const { durationSeconds: _d, ...rest } = v;
+      return rest;
+    });
 
     return NextResponse.json({
       success: true,
-      count: videos?.length ?? 0,
-      videos: videos ?? [],
+      count: videosForResponse.length,
+      videos: videosForResponse,
+      pagination: {
+        page,
+        totalPages,
+        totalCount,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
     });
   } catch (err) {
     console.error('YouTube API error:', err);

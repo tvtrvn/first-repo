@@ -1,8 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8f9fb;
+  --foreground: #1a1d24;
+  --heading: #1a1d24;
+  --muted: #5c6370;
+  --accent: #c2410c;
+  --accent-hover: #9a3412;
+  --card-bg: #ffffff;
+  --card-border: #e5e7eb;
+  --card-border-hover: #d1d5db;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --card-shadow-hover: 0 12px 24px -8px rgba(0, 0, 0, 0.12);
+  --thumbnail-bg: #eef0f3;
+  --header-bg: linear-gradient(135deg, #1a1d24 0%, #2d323c 100%);
+  --header-text: #f8f9fb;
 }
 
 @theme inline {
@@ -14,13 +26,32 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #0f1115;
+    --foreground: #e8eaed;
+    --heading: #e8eaed;
+    --muted: #9aa0a6;
+    --accent: #f97316;
+    --accent-hover: #fb923c;
+    --card-bg: #1a1d24;
+    --card-border: #2d323c;
+    --card-border-hover: #3d4452;
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    --card-shadow-hover: 0 12px 24px -8px rgba(0, 0, 0, 0.4);
+    --thumbnail-bg: #252930;
+    --header-bg: linear-gradient(135deg, #1a1d24 0%, #252930 100%);
+    --header-text: #e8eaed;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
