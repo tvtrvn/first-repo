@@ -12,8 +12,12 @@ function durationToSeconds(iso?: string): number {
 }
 
 const SHORTS_MAX_SECONDS = 60; // Exclude Shorts (≤60s)
-const PER_PAGE = 50;
-const SEARCH_PAGES = 8; // 8 × 50 = 400 candidates so we have multiple pages after filtering Shorts
+const PER_PAGE = 25;
+const MAX_VIDEOS = 100;
+// Quota-friendly: 1 query, 5 pages = 5 search (500 units) + ~5 videos.list (5 units) ≈ 505 units/load
+// (was 3 queries × 10 pages ≈ 3000+ units)
+const SEARCH_PAGES = 5;
+const SEARCH_QUERY = 'vpop music videos';
 
 export async function GET(request: Request) {
   if (!API_KEY || API_KEY === 'paste_your_api_key_here') {
@@ -28,7 +32,7 @@ export async function GET(request: Request) {
     const pageParam = url.searchParams.get('page');
     const currentPage = Math.max(1, parseInt(pageParam ?? '1', 10) || 1);
 
-    // 1) Fetch multiple pages of search so we have enough non-Shorts for pagination
+    // 1) Fetch one search query, limited pages to save quota (search.list = 100 units/request)
     let videoIds: string[] = [];
     let pageToken: string | undefined;
 
@@ -38,7 +42,7 @@ export async function GET(request: Request) {
         type: 'video',
         order: 'viewCount',
         regionCode: 'VN',
-        q: 'vpop music videos',
+        q: SEARCH_QUERY,
         maxResults: '50',
         key: API_KEY,
       });
@@ -49,9 +53,16 @@ export async function GET(request: Request) {
         { next: { revalidate: 3600 } }
       );
       if (!searchRes.ok) {
-        const error = await searchRes.json();
+        const error = await searchRes.json().catch(() => ({}));
+        const reason = error?.error?.errors?.[0]?.reason;
+        const message =
+          reason === 'quotaExceeded'
+            ? 'YouTube API quota exceeded. Try again tomorrow or increase quota in Google Cloud Console.'
+            : reason === 'rateLimitExceeded'
+              ? 'YouTube API rate limit exceeded. Please try again in a few minutes.'
+              : 'YouTube API error';
         return NextResponse.json(
-          { error: 'YouTube API error', details: error },
+          { error: message, details: error },
           { status: searchRes.status }
         );
       }
@@ -65,7 +76,12 @@ export async function GET(request: Request) {
     }
 
     if (videoIds.length === 0) {
-      return NextResponse.json({ success: true, count: 0, videos: [] });
+      return NextResponse.json({
+        success: true,
+        count: 0,
+        videos: [],
+        pagination: { page: 1, totalPages: 1, totalCount: 0, hasNextPage: false, hasPrevPage: false },
+      });
     }
 
     // 2) Get details in batches of 50 (videos.list max id count)
@@ -89,9 +105,16 @@ export async function GET(request: Request) {
         { next: { revalidate: 3600 } }
       );
       if (!videosRes.ok) {
-        const error = await videosRes.json();
+        const error = await videosRes.json().catch(() => ({}));
+        const reason = error?.error?.errors?.[0]?.reason;
+        const message =
+          reason === 'quotaExceeded'
+            ? 'YouTube API quota exceeded. Try again tomorrow or increase quota in Google Cloud Console.'
+            : reason === 'rateLimitExceeded'
+              ? 'YouTube API rate limit exceeded. Please try again in a few minutes.'
+              : 'YouTube API error';
         return NextResponse.json(
-          { error: 'YouTube API error', details: error },
+          { error: message, details: error },
           { status: videosRes.status }
         );
       }
@@ -123,6 +146,8 @@ export async function GET(request: Request) {
     videos = videos.filter((v: VideoItem) => (v.durationSeconds ?? 0) > SHORTS_MAX_SECONDS);
     // Sort only by view count, descending
     videos = videos.sort((a: VideoItem, b: VideoItem) => Number(b.viewCount ?? 0) - Number(a.viewCount ?? 0));
+    // Cap total to MAX_VIDEOS
+    videos = videos.slice(0, MAX_VIDEOS);
 
     const totalCount = videos.length;
     const totalPages = Math.max(1, Math.ceil(totalCount / PER_PAGE));

@@ -2,17 +2,25 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import { VideoCard } from "./components/VideoCard";
 
+export const dynamic = "force-dynamic";
+
 async function getVideos(page: number) {
   const headersList = await headers();
   const host = headersList.get("host") ?? "localhost:3000";
   const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
   const base = `${protocol}://${host}`;
-  const res = await fetch(`${base}/api/youtube/test?page=${page}`, { next: { revalidate: 3600 } });
-  if (!res.ok) return { videos: [], error: true, pagination: null };
-  const data = await res.json();
+  const res = await fetch(`${base}/api/youtube/test?page=${page}`, { cache: "no-store" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return {
+      videos: [],
+      error: typeof data.error === "string" ? data.error : true,
+      pagination: null,
+    };
+  }
   return {
     videos: data.videos ?? [],
-    error: data.error,
+    error: data.error ?? null,
     pagination: data.pagination ?? null,
   };
 }
@@ -25,7 +33,7 @@ export default async function Home({
   const params = await searchParams;
   const page = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
   const { videos, error, pagination } = await getVideos(page);
-  const rankOffset = (pagination?.page ?? 1) * 50 - 50;
+  const rankOffset = (pagination?.page ?? 1) * 25 - 25;
 
   return (
     <div className="min-h-screen" style={{ background: "var(--background)" }}>
@@ -57,7 +65,21 @@ export default async function Home({
               color: "var(--foreground)",
             }}
           >
-            Could not load videos. Check that <code className="rounded px-1 font-mono text-xs" style={{ background: "rgba(0,0,0,0.1)" }}>YOUTUBE_API_KEY</code> is set in <code className="rounded px-1 font-mono text-xs" style={{ background: "rgba(0,0,0,0.1)" }}>.env.local</code> and the API is enabled.
+            {typeof error === "string" ? (
+              error
+            ) : (
+              <>
+                Could not load videos. Check that{" "}
+                <code className="rounded px-1 font-mono text-xs" style={{ background: "rgba(0,0,0,0.1)" }}>
+                  YOUTUBE_API_KEY
+                </code>{" "}
+                is set in{" "}
+                <code className="rounded px-1 font-mono text-xs" style={{ background: "rgba(0,0,0,0.1)" }}>
+                  .env.local
+                </code>{" "}
+                and the API is enabled.
+              </>
+            )}
           </div>
         )}
 
